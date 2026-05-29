@@ -32,3 +32,7 @@ Configurable:
 ## TLS certificate
 
 The Starfield Services Root Certificate Authority - G2 PEM is embedded in `src/main.cpp` as `ROOT_CA` and used for `wss://` connections via `ws.beginSSL(..., ROOT_CA)`.
+
+## OCPP WebSocket subprotocol
+
+The firmware now passes `ocpp1.6` via the WebSocketsClient protocol parameter instead of injecting `Sec-WebSocket-Protocol` as an extra header.
