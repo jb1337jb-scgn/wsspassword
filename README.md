@@ -1,51 +1,34 @@
-# ESP32-S3-N16R8 OCPP Wallbox Simulator - Basic AP+STA
+# ESP32-S3-N16R8 OCPP Wallbox Simulator - Real Station Behaviour
 
-Grundversion fuer den ESP32-S3-N16R8.
+Based on the basic AP+STA firmware, adapted to behave closer to the provided real station communication.
 
-## WLAN
+## Network
+- STA: internet / internet
+- AP: Wallbox-Simulator / 12345678
+- AP UI: http://192.168.4.1
 
-- Station WLAN: `internet` / `internet`
-- Parallel AP: `Wallbox-Simulator` / `12345678`
-- AP Webinterface: `http://192.168.4.1`
+## OCPP behavior
+- BootNotification payload modeled after the real station
+- Unique IDs like timestamp-random-counter
+- Connector 1 StatusNotification on state changes
+- Heartbeat uses interval from BootNotification.conf, default 300s
+- StartTransaction.conf transactionId is parsed and reused for MeterValues and StopTransaction
+- MeterValues are sent only while a transaction is active
 
-## Webinterface
-
-Aenderbar und dauerhaft gespeichert:
-
+## Web UI
+Configurable:
 - ChargeboxID
 - BackendURL
-- WSS Passwort
+- WSS password
+- Basic Auth enabled
+- Append ChargeboxID to URL
 
-Default WSS Passwort: `12345678`
+## Internal NeoPixel
+- off: no backend
+- blue: WebSocket connected
+- green: BootNotification accepted
+- red: fault
 
-## GPIOs auf der 3V3-Seite
+## TLS certificate
 
-Eingaenge sind `INPUT_PULLUP`, aktiv gegen GND.
-
-| Funktion | GPIO |
-|---|---:|
-| Plug Switch | 4 |
-| Auth Button | 5 |
-| Start Button | 6 |
-| Stop Button | 7 |
-| Fault Switch | 15 |
-| Reset Button | 16 |
-| Connect Button | 17 |
-| Potentiometer | 3 |
-| LED Available | 18 |
-| LED Preparing | 8 |
-| LED Charging | 9 |
-| LED Faulted | 10 |
-| Charge Enable | 11 |
-| Debug LED | 12 |
-| Relay Sim | 13 |
-| Buzzer/Signal | 14 |
-| Reserved | 46 |
-
-## Interne RGB LED
-
-NeoPixel auf GPIO 48:
-
-- aus: keine Backendverbindung
-- blau: WebSocket verbunden
-- gruen: BootNotification accepted
+The Starfield Services Root Certificate Authority - G2 PEM is embedded in `src/main.cpp` as `ROOT_CA` and used for `wss://` connections via `ws.beginSSL(..., ROOT_CA)`.
