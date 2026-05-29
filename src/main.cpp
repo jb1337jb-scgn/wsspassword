@@ -8,6 +8,21 @@
 #include <Adafruit_NeoPixel.h>
 #include <time.h>
 
+// Forward declarations for PlatformIO/GitHub Actions builds
+bool parseUrl(const String& url,String& host,uint16_t& port,String& path,bool& secure);
+String fullOcppUrl();
+void addLog(const String& line);
+void setPhase(const String& p, const String& detail="");
+void wsEvent(WStype_t type, uint8_t * payload, size_t length);
+void readInputs();
+void deriveState();
+void reportStatusIfChanged();
+void updateOutputs();
+void updateRgb();
+void sendHeartbeat();
+void sendMeterValues();
+
+
 const char* WIFI_SSID = "internet";
 const char* WIFI_PASS = "internet";
 const char* AP_PASS = "12345678";
