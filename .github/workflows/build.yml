@@ -1,0 +1,27 @@
+name: Build ESP32-S3 firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Add PlatformIO in cloud runner
+        run: python -m pip install platformio
+      - name: Build
+        run: pio run
+      - name: Collect firmware files
+        run: |
+          mkdir -p firmware
+          find .pio/build -type f -name '*.bin' -print -exec cp {} firmware/ \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp32-s3-firmware
+          path: firmware/
