@@ -1,221 +1,349 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <base64.h>
-#include <Adafruit_NeoPixel.h>
 #include <time.h>
-
-// Forward declarations for PlatformIO/GitHub Actions builds
-bool parseUrl(const String& url,String& host,uint16_t& port,String& path,bool& secure);
-String fullOcppUrl();
-void addLog(const String& line);
-void setPhase(const String& p, const String& detail="");
-void wsEvent(WStype_t type, uint8_t * payload, size_t length);
-void readInputs();
-void deriveState();
-void reportStatusIfChanged();
-void updateOutputs();
-void updateRgb();
-void sendHeartbeat();
-void sendMeterValues();
-
 
 const char* WIFI_SSID = "internet";
 const char* WIFI_PASS = "internet";
-const char* AP_PASS = "12345678";
-String deviceId = "";
-String apSsid = "";
+const char* AP_PASS = "chargecloud";
 
-const int PIN_PLUG_SWITCH   = 4;
-const int PIN_AUTH_BUTTON   = 5;
-const int PIN_START_BUTTON  = 6;
-const int PIN_STOP_BUTTON   = 7;
-const int PIN_FAULT_SWITCH  = 15;
-const int PIN_RESET_BUTTON  = 16;
-const int PIN_CONNECT_BTN   = 17;
-const int PIN_POWER_POT     = 3;
-const int PIN_LED_AVAILABLE = 18;
-const int PIN_LED_PREPARING = 8;
-const int PIN_LED_CHARGING  = 9;
-const int PIN_LED_FAULTED   = 10;
-const int PIN_CHARGE_ENABLE = 11;
-const int PIN_DEBUG_LED     = 12;
-const int PIN_RELAY_SIM     = 13;
-const int PIN_BUZZER        = 14;
-const int PIN_INTERNAL_RGB_LED = 48;
-
-Adafruit_NeoPixel internalRgb(1, PIN_INTERNAL_RGB_LED, NEO_GRB + NEO_KHZ800);
 WebServer server(80);
-WebSocketsClient ws;
 Preferences prefs;
 
-const char ROOT_CA[] PROGMEM = R"EOF(
------BEGIN CERTIFICATE-----
-MIID7zCCAtegAwIBAgIBADANBgkqhkiG9w0BAQsFADCBmDELMAkGA1UEBhMCVVMx
-EDAOBgNVBAgTB0FyaXpvbmExEzARBgNVBAcTClNjb3R0c2RhbGUxJTAjBgNVBAoT
-HFN0YXJmaWVsZCBUZWNobm9sb2dpZXMsIEluYy4xOzA5BgNVBAMTMlN0YXJmaWVs
-ZCBTZXJ2aWNlcyBSb290IENlcnRpZmljYXRlIEF1dGhvcml0eSAtIEcyMB4XDTA5
-MDkwMTAwMDAwMFoXDTM3MTIzMTIzNTk1OVowgZgxCzAJBgNVBAYTAlVTMRAwDgYD
-VQQIEwdBcml6b25hMRMwEQYDVQQHEwpTY290dHNkYWxlMSUwIwYDVQQKExxTdGFy
-ZmllbGQgVGVjaG5vbG9naWVzLCBJbmMuMTswOQYDVQQDEzJTdGFyZmllbGQgU2Vy
-dmljZXMgUm9vdCBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkgLSBHMjCCASIwDQYJKoZI
-hvcNAQEBBQADggEPADCCAQoCggEBANUMOsQq+U7i9b4Zl1+OiFOxHz/Lz58gE20p
-OsgPfTz3a3Y4Y9k2YKibXlwAgLIvWX/2h/klQ4bnaRtSmpDhcePYLQ1Ob/bISdm2
-8xpWriu2dBTrz/sm4xq6HZYuajtYlIlHVv8loJNwU4PahHQUw2eeBGg6345AWh1K
-Ts9DkTvnVtYAcMtS7nt9rjrnvDH5RfbCYM8TWQIrgMw0R9+53pBlbQLPLJGmpufe
-hRhJfGZOozptqbXuNC66DQO4M99H67FrjSXZm86B0UVGMpZwh94CDklDhbZsc7tk
-6mFBrMnUVN+HL8cisibMn1lUaJ/8viovxFUcdUBgF4UCVTmLfwUCAwEAAaNCMEAw
-DwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFJxfAN+q
-AdcwKziIorhtSpzyEZGDMA0GCSqGSIb3DQEBCwUAA4IBAQBLNqaEd2ndOxmfZyMI
-bw5hyf2E3F/YNoHN2BtBLZ9g3ccaaNnRbobhiCPPE95Dz+I0swSdHynVv/heyNXB
-ve6SbzJ08pGCL72CQnqtKrcgfU28elUSwhXqvfdqlS5sdJ/PHLTyxQGjhdByPq1z
-qwubdQxtRbeOlKyWN7Wg0I8VRw7j6IPdj/3vQQF3zCepYoUz8jcI73HPdwbeyBkd
-iEDPfUYd/x7H4c7/I9vG+o1VTqkC50cRRj70/b17KSa7qWFiNyi2LSr2EIZkyXCn
-0q23KXB56jzaYyWf/Wi3MOxw+3WKt21gZ7IeyLnp2KhvAotnDU0mV3HaIPzBSlCN
-sSi6
------END CERTIFICATE-----
-)EOF";
+String deviceId, apSsid;
+String backendUrl = "";
+bool backendEnabled = false;
 
+const float PRICE_PER_KWH = 0.50;
 
-String chargeboxId = "SIM_ESP32S3_001";
-String backendUrl = "wss://demo.ocpp.cc/83d29edd7b79881259e1759ed19ea569";
-String wssPassword = "12345678";
-bool basicAuthEnabled = false;
-bool appendChargeboxId = true;
-String idTag = "CAFFEE";
+// GPIO inputs, 3.3V side only, active LOW with internal pullups
+const int PIN_IN_RELEASE = 4;
+const int PIN_IN_PLUG = 5;
+const int PIN_IN_AUTHORIZE = 6;
+const int PIN_IN_START = 7;
+const int PIN_IN_STOP = 15;
+const int PIN_IN_ERROR = 10;
+const int PIN_POT_POWER = 1; // ADC input, 3.3V max, maps to 0..22 kW
 
-bool wsConnected = false;
-bool ocppAccepted = false;
-bool ntpSynced = false;
-String wifiStatus = "unknown";
-String dnsStatus = "not_checked";
-String ntpStatus = "not_checked";
-String wsStatus = "disconnected";
-String ocppStatus = "not_started";
+// Status LED GPIO outputs
+const int PIN_LED_AVAILABLE = 16;
+const int PIN_LED_PLUGGED = 17;
+const int PIN_LED_AUTHORIZED = 18;
+const int PIN_LED_CHARGING = 8;
+const int PIN_LED_FAULTED = 9;
+
+#ifndef RGB_BUILTIN
+#define RGB_BUILTIN 48
+#endif
+
+bool lastInRelease = HIGH, lastInPlug = HIGH, lastInAuthorize = HIGH, lastInStart = HIGH, lastInStop = HIGH, lastInError = HIGH;
+bool ledAvailable=false, ledPlugged=false, ledAuthorized=false, ledCharging=false, ledFaulted=false;
+bool chargeReleaseActive=false;
+int potRaw=0;
+float potVoltage=0.0;
+
 bool plugged = false;
 bool authorized = false;
+bool charging = false;
 bool faulted = false;
-bool transactionActive = false;
+String idTag = "DEMO-TAG";
 String state = "Available";
-String lastReportedStatus = "";
-String lastEvent = "Boot";
-String connectPhase = "idle";
-String connectError = "none";
-String lastBootUid = "";
-String lastAuthorizeUid = "";
-String lastStartUid = "";
-String lastStopUid = "";
-int msgCounter = 1;
-int transactionId = -1;
-float powerKw = 0.0;
-float sessionWh = 0.0;
-unsigned long heartbeatIntervalSec = 300;
-unsigned long lastHeartbeatMs = 0;
-unsigned long lastMeterMs = 0;
+String sessionId = "";
+String lastEvent = "Ready";
 
-bool lastAuth = HIGH, lastStart = HIGH, lastStop = HIGH, lastReset = HIGH, lastConnect = HIGH, lastPlug = HIGH, lastFault = HIGH;
-String ocppLog[40]; int ocppLogPos = 0; int ocppLogCount = 0;
+uint32_t sessionStartMs = 0;
+uint32_t sessionStopMs = 0;
+uint32_t lastTickMs = 0;
+float powerKw = 11.0;
+float sessionKwh = 0.0;
+float lastSessionKwh = 0.0;
+float lastSessionCost = 0.0;
+String lastSessionStart = "";
+String lastSessionStop = "";
+String lastSessionId = "";
 
-String isoTimestamp(){ struct tm t; if(getLocalTime(&t,50)){ char b[25]; strftime(b,sizeof(b),"%Y-%m-%dT%H:%M:%SZ",&t); return String(b);} return "2026-01-01T00:00:00Z"; }
-void setPhase(const String& ph, const String& err="none"){ connectPhase=ph; connectError=err; }
-void addLog(const String& line){ ocppLog[ocppLogPos]=isoTimestamp()+" "+line; ocppLogPos=(ocppLogPos+1)%40; if(ocppLogCount<40)ocppLogCount++; Serial.println(line); }
-void rgb(uint8_t r,uint8_t g,uint8_t b){ internalRgb.setPixelColor(0, internalRgb.Color(r,g,b)); internalRgb.show(); }
-void updateRgb(){ if(faulted) rgb(80,0,0); else if(wsConnected&&ocppAccepted) rgb(0,80,0); else if(wsConnected) rgb(0,0,80); else rgb(0,0,0); }
+String logs[80];
+int logPos = 0, logCount = 0;
 
-String makeDeviceId(){ uint64_t mac=ESP.getEfuseMac(); char b[7]; snprintf(b,sizeof(b),"%02X%02X%02X", (uint8_t)(mac>>16), (uint8_t)(mac>>8), (uint8_t)mac); return String(b); }
-
-String makeUid(){ time_t now=time(nullptr); if(now<100000) now=millis()/1000; return String((unsigned long)now)+"-"+String(random(100000000,999999999))+"-"+String(msgCounter++); }
-
-void initPins(){
-  int ins[]={PIN_PLUG_SWITCH,PIN_AUTH_BUTTON,PIN_START_BUTTON,PIN_STOP_BUTTON,PIN_FAULT_SWITCH,PIN_RESET_BUTTON,PIN_CONNECT_BTN};
-  for(int p:ins) pinMode(p, INPUT_PULLUP);
-  int outs[]={PIN_LED_AVAILABLE,PIN_LED_PREPARING,PIN_LED_CHARGING,PIN_LED_FAULTED,PIN_CHARGE_ENABLE,PIN_DEBUG_LED,PIN_RELAY_SIM,PIN_BUZZER};
-  for(int p:outs) pinMode(p, OUTPUT);
-}
-void deriveState(){ if(faulted) state="Faulted"; else if(transactionActive) state="Charging"; else if(plugged) state="Preparing"; else state="Available"; }
-void updateOutputs(){ digitalWrite(PIN_LED_AVAILABLE,state=="Available"); digitalWrite(PIN_LED_PREPARING,state=="Preparing"); digitalWrite(PIN_LED_CHARGING,state=="Charging"); digitalWrite(PIN_LED_FAULTED,state=="Faulted"); digitalWrite(PIN_CHARGE_ENABLE,state=="Charging"); digitalWrite(PIN_DEBUG_LED,WiFi.status()==WL_CONNECTED); digitalWrite(PIN_RELAY_SIM,transactionActive); digitalWrite(PIN_BUZZER,faulted); }
-
-void loadConfig(){ prefs.begin("wallbox",false); deviceId=makeDeviceId(); apSsid="Wallbox-SIM-"+deviceId; chargeboxId=prefs.getString("cbid","SIM_ESP32S3_"+deviceId); backendUrl=prefs.getString("url",backendUrl); wssPassword=prefs.getString("wssPw","12345678"); basicAuthEnabled=prefs.getBool("auth",false); appendChargeboxId=prefs.getBool("append",true); }
-void saveConfig(JsonDocument& d){ chargeboxId=d["chargeboxId"]|chargeboxId; backendUrl=d["backendUrl"]|backendUrl; wssPassword=d["wssPassword"]|wssPassword; basicAuthEnabled=d["basicAuthEnabled"]|basicAuthEnabled; appendChargeboxId=d["appendChargeboxId"]|appendChargeboxId; prefs.putString("cbid",chargeboxId); prefs.putString("url",backendUrl); prefs.putString("wssPw",wssPassword); prefs.putBool("auth",basicAuthEnabled); prefs.putBool("append",appendChargeboxId); }
-String fullOcppUrl(){ String u=backendUrl; if(appendChargeboxId && !u.endsWith("/"+chargeboxId)){ if(!u.endsWith("/")) u+="/"; u+=chargeboxId; } return u; }
-bool parseUrl(const String& url,String& host,uint16_t& port,String& path,bool& secure){ secure=url.startsWith("wss://"); bool plain=url.startsWith("ws://"); if(!secure&&!plain)return false; int start=secure?6:5; int slash=url.indexOf('/',start); String hp=slash>=0?url.substring(start,slash):url.substring(start); path=slash>=0?url.substring(slash):"/"; int colon=hp.indexOf(':'); if(colon>=0){host=hp.substring(0,colon); port=hp.substring(colon+1).toInt();} else {host=hp; port=secure?443:80;} return host.length()>0; }
-
-String sendOcpp(const String& action, JsonDocument& payload){ if(!wsConnected) return ""; String uid=makeUid(); JsonDocument arr; arr.add(2); arr.add(uid); arr.add(action); arr.add(payload.as<JsonVariant>()); String body; serializeJson(arr,body); ws.sendTXT(body); addLog("TX "+body); return uid; }
-void sendBootNotification(){ JsonDocument p; p["chargePointVendor"]="session."; p["chargePointModel"]="DC_CHARGER-13KW"; p["chargePointSerialNumber"]="Sessioncharge"; p["chargeBoxSerialNumber"]=""; p["firmwareVersion"]="DCCHARGER_CC_V30.64_1218;UULN;DW_T5_L10"; p["iccid"]=""; p["imsi"]=""; p["meterType"]="DC-Meter"; p["meterSerialNumber"]="000000000001"; lastBootUid=sendOcpp("BootNotification",p); }
-void sendStatusNotification(const String& st){ JsonDocument p; p["connectorId"]=1; p["errorCode"]=faulted?"OtherError":"NoError"; p["status"]=st; sendOcpp("StatusNotification",p); }
-void reportStatusIfChanged(){ if(!ocppAccepted) return; if(state!=lastReportedStatus){ sendStatusNotification(state); lastReportedStatus=state; } }
-void sendHeartbeat(){ JsonDocument p; sendOcpp("Heartbeat",p); lastHeartbeatMs=millis(); }
-void sendAuthorize(){ JsonDocument p; p["idTag"]=idTag; lastAuthorizeUid=sendOcpp("Authorize",p); }
-void sendStartTransaction(){ JsonDocument p; p["connectorId"]=1; p["idTag"]=idTag; p["meterStart"]=(int)sessionWh; p["timestamp"]=isoTimestamp(); lastStartUid=sendOcpp("StartTransaction",p); }
-void sendStopTransaction(){ JsonDocument p; p["meterStop"]=(int)sessionWh; p["timestamp"]=isoTimestamp(); p["transactionId"]=transactionId>0?transactionId:1; lastStopUid=sendOcpp("StopTransaction",p); }
-void sendMeterValues(){ if(transactionId<0) return; JsonDocument p; p["connectorId"]=1; p["transactionId"]=transactionId; JsonArray mv=p["meterValue"].to<JsonArray>(); JsonObject item=mv.add<JsonObject>(); item["timestamp"]=isoTimestamp(); JsonArray sv=item["sampledValue"].to<JsonArray>(); JsonObject e=sv.add<JsonObject>(); e["value"]=String(sessionWh/1000.0,3); e["measurand"]="Energy.Active.Import.Register"; e["unit"]="kWh"; JsonObject pow=sv.add<JsonObject>(); pow["value"]=String(powerKw,1); pow["measurand"]="Power.Active.Import"; pow["unit"]="kW"; sendOcpp("MeterValues",p); }
-
-void handleCallResult(const String& uid, JsonVariant payload){
-  if(uid==lastBootUid){ String status=payload["status"]|""; heartbeatIntervalSec=payload["interval"]|300; ocppAccepted=(status=="Accepted"); ocppStatus=ocppAccepted?"accepted":"rejected"; if(ocppAccepted){ setPhase("bootAccepted"); lastEvent="Boot accepted"; lastReportedStatus=""; sendStatusNotification(state); lastReportedStatus=state; lastHeartbeatMs=millis(); } }
-  else if(uid==lastStartUid){ transactionId=payload["transactionId"]|1; transactionActive=true; lastEvent="Transaction ID "+String(transactionId); }
-  else if(uid==lastAuthorizeUid){ authorized=true; lastEvent="Authorized accepted"; }
-  else if(uid==lastStopUid){ transactionActive=false; transactionId=-1; lastEvent="Stopped"; }
+String makeDeviceId(){
+  uint64_t mac = ESP.getEfuseMac();
+  char b[13];
+  snprintf(b,sizeof(b),"%06X",(uint32_t)(mac & 0xFFFFFF));
+  return String(b);
 }
 
-void wsEvent(WStype_t type,uint8_t* payload,size_t length){
-  if(type==WStype_CONNECTED){ wsStatus="connected"; wsConnected=true; ocppAccepted=false; lastReportedStatus=""; setPhase("wsConnected"); addLog("WS connected"); sendBootNotification(); ocppStatus="boot_sent"; setPhase("bootSent"); }
-  else if(type==WStype_DISCONNECTED){ wsStatus="disconnected"; wsConnected=false; ocppAccepted=false; if(connectPhase!="bootAccepted") setPhase("disconnected","Backend closed connection or TLS/Auth/Subprotocol failed"); addLog("WS disconnected"); }
-  else if(type==WStype_TEXT){ String msg=String((char*)payload).substring(0,length); addLog("RX "+msg); JsonDocument d; if(deserializeJson(d,msg)==DeserializationError::Ok){ int mt=d[0]|0; if(mt==3){ String uid=d[1]|""; handleCallResult(uid,d[2]); } } }
-}
-
-void connectOcpp(){ String url=fullOcppUrl(); if(url.startsWith("wss://") && !ntpSynced){ setPhase("ntpError","NTP not synced. WSS/TLS may fail."); addLog("NTP not synced - refusing WSS connect"); return; } if(WiFi.status()!=WL_CONNECTED){ setPhase("wifiError","WiFi not connected"); addLog("WiFi not connected - refusing OCPP connect"); return; } checkDnsForUrl(url); if(dnsStatus!="ok"){ setPhase("dnsError","Backend hostname cannot be resolved"); return; } wsStatus="connecting"; ocppStatus="connecting"; String host,path; uint16_t port; bool secure; if(!parseUrl(url,host,port,path,secure)){ setPhase("urlError","Invalid BackendURL. Use ws:// or wss://"); addLog("Invalid BackendURL"); return; } ws.disconnect(); ws.onEvent(wsEvent); ws.setReconnectInterval(5000); String headers=""; if(basicAuthEnabled && wssPassword.length()>0){ headers="Authorization: Basic "+base64::encode(chargeboxId+":"+wssPassword)+"\r\n"; } ws.setExtraHeaders(headers.c_str()); if(secure) ws.beginSSL(host.c_str(),port,path.c_str(),ROOT_CA,"ocpp1.6"); else ws.begin(host.c_str(),port,path.c_str(),"ocpp1.6"); setPhase("connecting"); addLog("Connecting "+url+" auth="+String(basicAuthEnabled?"on":"off")+" subprotocol=ocpp1.6"); }
-
-String htmlPage(){ return R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wallbox Simulator</title><style>body{font-family:Arial,sans-serif;background:#eef3f7;color:#102033;margin:0;padding:20px}.wrap{max-width:1050px;margin:auto}.card{background:white;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 10px 30px #0001}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.metric{background:#f6f9fc;border-radius:12px;padding:12px}.label{font-size:12px;color:#607084}.value{font-size:18px;font-weight:800;overflow-wrap:anywhere}input{width:100%;padding:10px;border:1px solid #ccd7e2;border-radius:10px;margin:4px 0 10px}button{border:0;border-radius:12px;padding:12px 14px;font-weight:800;background:#102033;color:white;margin:6px 6px 0 0}.row{display:flex;gap:16px;flex-wrap:wrap}.check{display:flex;align-items:center;gap:8px}.leds{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.led{display:flex;align-items:center;gap:10px;background:#f6f9fc;border-radius:12px;padding:12px;font-weight:800}.dot{width:18px;height:18px;border-radius:50%;background:#cbd5e1;box-shadow:inset 0 0 0 2px #94a3b8}.dot.on{background:#10b981;box-shadow:0 0 16px #10b981aa}.dot.warn{background:#f59e0b;box-shadow:0 0 16px #f59e0baa}.dot.bad{background:#ef4444;box-shadow:0 0 16px #ef4444aa}pre{background:#0b1622;color:#d8eaff;border-radius:14px;padding:14px;overflow:auto;max-height:280px}</style></head><body><div class="wrap"><h1>ESP32-S3 OCPP Wallbox Simulator</h1><div class="card"><h2>WSS Connection LEDs</h2><div class="leds" id="leds"></div><p id="hint"></p></div><div class="card"><h2>Status</h2><div class="grid" id="status"></div></div><div class="card"><h2>OCPP Configuration</h2><label>ChargeboxID</label><input id="cbid"><label>BackendURL</label><input id="url"><label>WSS Password</label><input id="pw" type="password"><div class="row"><label class="check"><input id="auth" type="checkbox" style="width:auto"> Basic Auth enabled</label><label class="check"><input id="append" type="checkbox" style="width:auto"> Append ChargeboxID to URL</label></div><button onclick="saveCfg()">Save configuration</button><button onclick="connectOcpp()">Connect OCPP</button><p id="msg"></p></div><div class="card"><h2>Live Log</h2><pre id="log">...</pre></div></div><script>let editing=false;document.addEventListener('focusin',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))editing=true});document.addEventListener('focusout',e=>{editing=false});function yn(v){return v?'Yes':'No'}async function load(){let s=await(await fetch('/api/state')).json();let led=(name,on,cls='on')=>'<div class="led"><span class="dot '+(on?cls:'')+'"></span>'+name+'</div>';leds.innerHTML=led('WLAN',s.net.wifi)+led('URL gültig',s.diagnosis.urlOk)+led('WSS/TLS verbunden',s.ocpp.wsConnected)+led('BootNotification gesendet',['bootSent','bootAccepted'].includes(s.diagnosis.phase),'warn')+led('Backend accepted',s.ocpp.accepted)+led('Fehler',s.diagnosis.phase==='disconnected'||s.diagnosis.phase==='urlError','bad');hint.textContent=s.diagnosis.error==='none'?'OK / kein Fehler gemeldet':s.diagnosis.error;let items=[['Device ID',s.device.deviceId],['AP SSID',s.device.apSsid],['STA IP',s.net.staIp],['AP IP',s.net.apIp],['Full URL',s.config.fullUrl],['Auth',yn(s.config.basicAuthEnabled)],['State',s.state],['OCPP WS',yn(s.ocpp.wsConnected)],['Boot accepted',yn(s.ocpp.accepted)],['Heartbeat',s.ocpp.heartbeatIntervalSec+'s'],['Last status',s.ocpp.lastStatus],['Transaction',s.transactionId],['Power',s.powerKw.toFixed(1)+' kW']];status.innerHTML=items.map(i=>'<div class="metric"><div class="label">'+i[0]+'</div><div class="value">'+i[1]+'</div></div>').join('');log.textContent=(s.log||[]).join('\n');if(!editing){cbid.value=s.config.chargeboxId;url.value=s.config.backendUrl;pw.value=s.config.wssPassword;auth.checked=s.config.basicAuthEnabled;append.checked=s.config.appendChargeboxId}}async function saveCfg(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chargeboxId:cbid.value,backendUrl:url.value,wssPassword:pw.value,basicAuthEnabled:auth.checked,appendChargeboxId:append.checked})});msg.textContent='Saved.';load()}async function connectOcpp(){await fetch('/api/connect',{method:'POST'});msg.textContent='Connecting...';load()}setInterval(load,1500);load();</script></body></html>)HTML"; }
-
-void handleState(){ JsonDocument doc; JsonObject dev=doc["device"].to<JsonObject>(); dev["deviceId"]=deviceId; dev["apSsid"]=apSsid; JsonObject net=doc["net"].to<JsonObject>(); net["wifi"]=WiFi.status()==WL_CONNECTED; net["wifiStatus"]=wifiStatus; net["dnsStatus"]=dnsStatus; net["ntpStatus"]=ntpStatus; net["ntpSynced"]=ntpSynced; net["wsStatus"]=wsStatus; net["ocppStatus"]=ocppStatus; net["staIp"]=WiFi.localIP().toString(); net["apIp"]=WiFi.softAPIP().toString(); doc["state"]=state; doc["plugged"]=plugged; doc["authorized"]=authorized; doc["transactionActive"]=transactionActive; doc["transactionId"]=transactionId; doc["faulted"]=faulted; doc["powerKw"]=powerKw; JsonObject diag=doc["diagnosis"].to<JsonObject>(); diag["phase"]=connectPhase; diag["error"]=connectError; diag["urlOk"]=fullOcppUrl().startsWith("ws://")||fullOcppUrl().startsWith("wss://"); JsonObject ocpp=doc["ocpp"].to<JsonObject>(); ocpp["wsConnected"]=wsConnected; ocpp["accepted"]=ocppAccepted; ocpp["heartbeatIntervalSec"]=heartbeatIntervalSec; ocpp["lastStatus"]=lastReportedStatus; JsonObject cfg=doc["config"].to<JsonObject>(); cfg["chargeboxId"]=chargeboxId; cfg["backendUrl"]=backendUrl; cfg["fullUrl"]=fullOcppUrl(); cfg["wssPassword"]=wssPassword; cfg["basicAuthEnabled"]=basicAuthEnabled; cfg["appendChargeboxId"]=appendChargeboxId; JsonArray logs=doc["log"].to<JsonArray>(); for(int i=0;i<ocppLogCount;i++){ int idx=(ocppLogPos-ocppLogCount+i+40)%40; logs.add(ocppLog[idx]); } String out; serializeJson(doc,out); server.send(200,"application/json",out); }
-void setupWeb(){ server.on("/",[](){server.send(200,"text/html",htmlPage());}); server.on("/api/state",HTTP_GET,handleState); server.on("/api/config",HTTP_POST,[](){ JsonDocument d; deserializeJson(d,server.arg("plain")); saveConfig(d); server.send(200,"application/json","{\"ok\":true}"); }); server.on("/api/connect",HTTP_POST,[](){ connectOcpp(); server.send(200,"application/json","{\"ok\":true}"); }); server.begin(); }
-bool waitForWifi(uint32_t timeoutMs=15000){
-  wifiStatus="connecting";
-  uint32_t start=millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-start<timeoutMs){ delay(250); }
-  wifiStatus = WiFi.status()==WL_CONNECTED ? "connected" : "failed";
-  if(wifiStatus=="connected") addLog("WiFi connected: "+WiFi.localIP().toString());
-  else addLog("WiFi failed");
-  return WiFi.status()==WL_CONNECTED;
-}
-
-bool checkNtp(uint32_t timeoutMs=12000){
-  if(WiFi.status()!=WL_CONNECTED){ ntpSynced=false; ntpStatus="wifi_not_connected"; addLog("NTP skipped: WiFi not connected"); return false; }
-  ntpStatus="syncing";
-  configTime(0,0,"pool.ntp.org","time.google.com","time.cloudflare.com");
-  time_t now=0; uint32_t start=millis();
-  while(millis()-start<timeoutMs){
-    time(&now);
-    if(now>1704067200){ ntpSynced=true; ntpStatus="synced"; addLog("NTP synced: "+isoTimestamp()); return true; }
-    delay(250);
+String isoTimestamp(){
+  time_t now; time(&now);
+  if(now < 1704067200) {
+    uint32_t s = millis()/1000;
+    char b[32]; snprintf(b,sizeof(b),"uptime+%lus",(unsigned long)s);
+    return String(b);
   }
-  ntpSynced=false; ntpStatus="failed"; addLog("NTP failed"); return false;
+  struct tm t; gmtime_r(&now,&t);
+  char b[32]; strftime(b,sizeof(b),"%Y-%m-%dT%H:%M:%SZ",&t);
+  return String(b);
 }
 
-bool checkDnsForUrl(const String& url){
-  String host,path; uint16_t port; bool secure;
-  if(!parseUrl(url,host,port,path,secure)){ dnsStatus="url_error"; return false; }
-  IPAddress ip;
-  if(WiFi.hostByName(host.c_str(), ip)){ dnsStatus="ok"; addLog("DNS ok: "+host+" -> "+ip.toString()); return true; }
-  dnsStatus="failed"; addLog("DNS failed: "+host); return false;
+void addLog(const String& msg){
+  String line = isoTimestamp() + " | " + msg;
+  logs[logPos] = line;
+  logPos = (logPos + 1) % 80;
+  if(logCount < 80) logCount++;
+  Serial.println(line);
+  lastEvent = msg;
 }
 
-void setupNetwork(){
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(apSsid.c_str(),AP_PASS);
-  WiFi.begin(WIFI_SSID,WIFI_PASS);
-  Serial.println("AP SSID: "+apSsid);
-  Serial.println("AP http://"+WiFi.softAPIP().toString());
-  if(waitForWifi()){
-    checkNtp();
-    checkDnsForUrl(fullOcppUrl());
-  } else {
-    ntpSynced=false; ntpStatus="wifi_not_connected"; dnsStatus="wifi_not_connected";
-  }
+void updateState(){
+  if(faulted) state = "Faulted";
+  else if(charging) state = "Charging";
+  else if(plugged && authorized) state = "Preparing";
+  else if(plugged) state = "Plugged";
+  else state = "Available";
 }
 
-void setup(){ Serial.begin(115200); randomSeed(esp_random()); internalRgb.begin(); internalRgb.clear(); internalRgb.show(); initPins(); loadConfig(); setupNetwork(); setupWeb(); addLog("Ready. Webinterface on AP http://192.168.4.1"); }
-void loop(){ server.handleClient(); ws.loop(); readInputs(); deriveState(); reportStatusIfChanged(); updateOutputs(); updateRgb(); if(ocppAccepted && millis()-lastHeartbeatMs > heartbeatIntervalSec*1000UL) sendHeartbeat(); if(transactionActive && transactionId>0 && millis()-lastMeterMs>10000){ sessionWh += powerKw*1000.0/360.0; sendMeterValues(); lastMeterMs=millis(); } }
+void tickEnergy(){
+  if(!charging){ lastTickMs = millis(); return; }
+  uint32_t now = millis();
+  if(lastTickMs == 0) lastTickMs = now;
+  uint32_t dt = now - lastTickMs;
+  lastTickMs = now;
+  sessionKwh += powerKw * ((float)dt / 3600000.0f);
+}
+
+String newSessionId(){ return "SIM-" + deviceId + "-" + String(millis()); }
+
+void doPlug(){
+  tickEnergy(); plugged = true; updateState(); addLog("Plugged: vehicle connected");
+}
+void doUnplug(){
+  tickEnergy();
+  if(charging){ charging=false; sessionStopMs=millis(); lastSessionStop=isoTimestamp(); addLog("StopTransaction: stopped by unplug"); }
+  plugged=false; authorized=false; updateState(); addLog("Unplugged: vehicle disconnected");
+}
+void doAuthorize(){
+  tickEnergy();
+  if(faulted){ addLog("Authorize rejected: fault active"); return; }
+  if(!plugged){ addLog("Authorize rejected: vehicle not plugged"); return; }
+  authorized=true; updateState(); addLog("Authorize accepted for idTag="+idTag);
+}
+void doStart(){
+  tickEnergy();
+  if(faulted){ addLog("Start rejected: fault active"); return; }
+  if(!plugged){ addLog("Start rejected: vehicle not plugged"); return; }
+  if(!authorized){ addLog("Start rejected: not authorized"); return; }
+  if(charging){ addLog("Start ignored: already charging"); return; }
+  sessionId = newSessionId();
+  lastSessionId = sessionId;
+  sessionKwh = 0.0;
+  sessionStartMs = millis();
+  sessionStopMs = 0;
+  lastTickMs = millis();
+  lastSessionStart = isoTimestamp();
+  charging = true; updateState();
+  addLog("StartTransaction: session="+sessionId+" power="+String(powerKw,1)+"kW");
+}
+void doStop(){
+  tickEnergy();
+  if(!charging){ addLog("Stop ignored: not charging"); return; }
+  charging=false; sessionStopMs=millis(); lastSessionStop=isoTimestamp();
+  lastSessionKwh = sessionKwh;
+  lastSessionCost = lastSessionKwh * PRICE_PER_KWH;
+  updateState();
+  addLog("StopTransaction: kWh="+String(lastSessionKwh,3)+" cost="+String(lastSessionCost,2)+" EUR");
+}
+void doReset(){
+  plugged=false; authorized=false; charging=false; faulted=false; sessionKwh=0; lastTickMs=millis(); updateState(); addLog("Reset: simulator set to Available");
+}
+
+
+void updatePowerFromPot(){
+  potRaw = analogRead(PIN_POT_POWER);
+  potVoltage = (potRaw / 4095.0f) * 3.3f;
+  powerKw = (potRaw / 4095.0f) * 22.0f;
+  if(powerKw < 0.1f) powerKw = 0.0f;
+}
+
+void setupGpio(){
+  pinMode(PIN_IN_RELEASE, INPUT_PULLUP);
+  pinMode(PIN_IN_PLUG, INPUT_PULLUP);
+  pinMode(PIN_IN_AUTHORIZE, INPUT_PULLUP);
+  pinMode(PIN_IN_START, INPUT_PULLUP);
+  pinMode(PIN_IN_STOP, INPUT_PULLUP);
+  pinMode(PIN_IN_ERROR, INPUT_PULLUP);
+  pinMode(PIN_POT_POWER, INPUT);
+  analogReadResolution(12);
+  pinMode(PIN_LED_AVAILABLE, OUTPUT);
+  pinMode(PIN_LED_PLUGGED, OUTPUT);
+  pinMode(PIN_LED_AUTHORIZED, OUTPUT);
+  pinMode(PIN_LED_CHARGING, OUTPUT);
+  pinMode(PIN_LED_FAULTED, OUTPUT);
+}
+
+void updateStatusLeds(){
+  ledAvailable = (state == "Available");
+  ledPlugged = plugged;
+  ledAuthorized = authorized;
+  ledCharging = charging;
+  ledFaulted = faulted;
+  digitalWrite(PIN_LED_AVAILABLE, ledAvailable ? HIGH : LOW);
+  digitalWrite(PIN_LED_PLUGGED, ledPlugged ? HIGH : LOW);
+  digitalWrite(PIN_LED_AUTHORIZED, ledAuthorized ? HIGH : LOW);
+  digitalWrite(PIN_LED_CHARGING, ledCharging ? HIGH : LOW);
+  digitalWrite(PIN_LED_FAULTED, ledFaulted ? HIGH : LOW);
+}
+
+void updateNeoPixel(){
+  chargeReleaseActive = digitalRead(PIN_IN_RELEASE) == LOW;
+  if(faulted) neopixelWrite(RGB_BUILTIN, 80, 0, 0);
+  else if(charging) neopixelWrite(RGB_BUILTIN, 0, 90, 0);
+  else if(chargeReleaseActive) neopixelWrite(RGB_BUILTIN, 0, 50, 0);
+  else neopixelWrite(RGB_BUILTIN, 0, 0, 25);
+}
+
+void readGpioInputs(){
+  bool inRelease = digitalRead(PIN_IN_RELEASE);
+  bool inPlug = digitalRead(PIN_IN_PLUG);
+  bool inAuthorize = digitalRead(PIN_IN_AUTHORIZE);
+  bool inStart = digitalRead(PIN_IN_START);
+  bool inStop = digitalRead(PIN_IN_STOP);
+  bool inError = digitalRead(PIN_IN_ERROR);
+
+  // Inputs trigger actions on falling edge. Status indicators in UI are display only.
+  if(lastInPlug == HIGH && inPlug == LOW){ if(!plugged) doPlug(); else doUnplug(); }
+  if(lastInAuthorize == HIGH && inAuthorize == LOW){ doAuthorize(); }
+  if(lastInStart == HIGH && inStart == LOW){ doStart(); }
+  if(lastInStop == HIGH && inStop == LOW){ doStop(); }
+  if(lastInRelease == HIGH && inRelease == LOW){ addLog("Ladefreigabe GPIO active"); }
+  if(lastInRelease == LOW && inRelease == HIGH){ addLog("Ladefreigabe GPIO inactive"); }
+  if(lastInError == HIGH && inError == LOW){ faulted=true; if(charging) doStop(); updateState(); addLog("Error switch active: Faulted"); }
+  if(lastInError == LOW && inError == HIGH){ faulted=false; updateState(); addLog("Error switch inactive: fault cleared"); }
+
+  lastInRelease = inRelease;
+  lastInPlug = inPlug;
+  lastInAuthorize = inAuthorize;
+  lastInStart = inStart;
+  lastInStop = inStop;
+  lastInError = inError;
+}
+
+String html(){ return R"HTML(
+<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32 Wallbox Local Simulator</title>
+<style>
+:root{--bg:#07111f;--card:#0d1b2e;--muted:#8ba3c7;--txt:#eef6ff;--blue:#35a7ff;--green:#2ee59d;--yellow:#ffd166;--red:#ff5c7a;--line:#213653}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#123052,#07111f 60%);color:var(--txt);font-family:Inter,Arial,sans-serif}.wrap{max-width:1150px;margin:0 auto;padding:22px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.brand{font-size:14px;color:var(--muted)}h1{margin:6px 0 4px;font-size:32px}.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px;margin-top:16px}.card{background:rgba(13,27,46,.88);border:1px solid var(--line);border-radius:18px;padding:18px;box-shadow:0 20px 50px rgba(0,0,0,.25)}.status{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:#132641;border:1px solid var(--line);font-weight:700}.dot{width:12px;height:12px;border-radius:50%;background:var(--muted)}.Available .dot{background:var(--blue)}.Plugged .dot,.Preparing .dot{background:var(--yellow)}.Charging .dot{background:var(--green);box-shadow:0 0 16px var(--green)}.Faulted .dot{background:var(--red)}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0}.metric{background:#081729;border:1px solid var(--line);border-radius:14px;padding:14px}.metric b{display:block;font-size:28px;margin-top:6px}.muted{color:var(--muted);font-size:13px}.buttons{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}button,a.btn{border:0;border-radius:12px;padding:13px 12px;color:white;background:#1b6ef3;font-weight:800;cursor:pointer;text-decoration:none;text-align:center}button.secondary,a.secondary{background:#243955}button.green{background:#159b6b}button.yellow{background:#b9820d}button.red{background:#c83e5a}button.gray{background:#35445a}.log{height:360px;overflow:auto;background:#06111f;border:1px solid var(--line);border-radius:14px;padding:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.5}.log div{border-bottom:1px solid rgba(255,255,255,.05);padding:4px 0}.bill{display:grid;gap:8px}.row{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:8px 0}.smallgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.gpioGrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.pill{border-radius:999px;padding:8px 10px;background:#081729;border:1px solid var(--line);font-size:12px}.lamp{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px}.blue{background:#35a7ff}.yellowc{background:#ffd166}.cyan{background:#33e1ff}.greenC{background:#2ee59d}.redC{background:#ff5c7a}.on{box-shadow:0 0 14px currentColor}@media(max-width:800px){.gpioGrid{grid-template-columns:1fr 1fr}}input{width:100%;background:#081729;color:white;border:1px solid var(--line);border-radius:10px;padding:11px}@media(max-width:800px){.grid{grid-template-columns:1fr}.buttons{grid-template-columns:1fr 1fr}.metrics{grid-template-columns:1fr}.top{display:block}}
+</style></head><body><div class="wrap">
+<div class="top"><div><div class="brand">chargecloud mini charging lab</div><h1>ESP32 Wallbox Simulator</h1><div class="muted">Lokale Simulation, Backend optional</div></div><div id="status" class="status"><span class="dot"></span><span>Loading</span></div></div>
+<div class="grid"><section class="card"><h2>Ladevorgang</h2><div class="metrics"><div class="metric"><span class="muted">Verbrauch</span><b id="kwh">0.000</b><span class="muted">kWh</span></div><div class="metric"><span class="muted">Kosten</span><b id="cost">0.00</b><span class="muted">EUR bei 0,50 EUR/kWh</span></div><div class="metric"><span class="muted">Leistung</span><b id="power">11.0</b><span class="muted">kW über Poti bis 22 kW</span></div></div><div class="metric"><span class="muted">Poti Ladeleistung</span><b id="poti">GPIO 1</b><span class="muted" id="potiDetail">ADC</span></div><div class="buttons"><button class="yellow" onclick="act('plug')">Plugged</button><button onclick="act('authorize')">Autorisieren</button><button class="green" onclick="act('start')">Start</button><button class="red" onclick="act('stop')">Stop</button><button class="gray" onclick="act('unplug')">Unplug</button><button class="secondary" onclick="act('reset')">Reset</button></div><h3>Statusmeldungen</h3><div class="smallgrid"><div class="metric"><span class="muted">Plugged</span><b id="plugged">-</b></div><div class="metric"><span class="muted">Autorisierung</span><b id="auth">-</b></div><div class="metric"><span class="muted">Transaktion</span><b id="tx">-</b></div><div class="metric"><span class="muted">Letztes Event</span><b id="event" style="font-size:16px">-</b></div></div><h3>GPIO Eingänge</h3><div class="gpioGrid" id="gpioIn"></div><h3>Status LEDs</h3><div class="gpioGrid" id="gpioLed"></div><p class="muted">GPIO-Eingänge lösen Aktionen aus. Klicks auf Statusanzeigen im Interface lösen keine Aktionen aus.</p></section><aside class="card"><h2>Abrechnung</h2><div class="bill"><div class="row"><span>Session</span><b id="sid">-</b></div><div class="row"><span>Start</span><b id="bst">-</b></div><div class="row"><span>Stop</span><b id="bsp">-</b></div><div class="row"><span>Preis</span><b>0,50 EUR/kWh</b></div><div class="row"><span>Gesamt</span><b id="total">0.00 EUR</b></div></div><p><a class="btn" href="/api/billing" target="_blank">Abrechnung als JSON abrufen</a></p><p><a class="btn secondary" href="/invoice" target="_blank">Abrechnung anzeigen / drucken</a></p><h3>Optionales Backend</h3><div class="muted">Die echte Backend-Verbindung bleibt optional. Diese Version simuliert lokal.</div><input id="backend" placeholder="wss://backend/ocpp"/><p><button class="secondary" onclick="saveBackend()">Backend speichern</button></p></aside></div><section class="card" style="margin-top:16px"><h2>Event Log</h2><div id="log" class="log"></div></section></div>
+<script>
+async function act(a){await fetch('/api/action?name='+a,{method:'POST'}); refresh();}
+async function saveBackend(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backendUrl:document.getElementById('backend').value})}); refresh();}
+async function refresh(){let r=await fetch('/api/state');let s=await r.json();document.getElementById('status').className='status '+s.state;document.querySelector('#status span:last-child').textContent=s.state; kwh.textContent=s.session.kwh.toFixed(3); cost.textContent=s.session.cost.toFixed(2); power.textContent=s.session.powerKw.toFixed(1); poti.textContent=s.powerPot.kw.toFixed(1)+' kW'; potiDetail.textContent='GPIO '+s.powerPot.pin+' | ADC '+s.powerPot.raw+' | '+s.powerPot.voltage.toFixed(2)+' V'; plugged.textContent=s.flags.plugged?'Ja':'Nein'; auth.textContent=s.flags.authorized?'Accepted':'Nicht autorisiert'; tx.textContent=s.flags.charging?'Charging':'Idle'; event.textContent=s.lastEvent; sid.textContent=s.billing.sessionId||'-'; bst.textContent=s.billing.start||'-'; bsp.textContent=s.billing.stop||'-'; total.textContent=s.billing.cost.toFixed(2)+' EUR'; backend.value=s.config.backendUrl||'';
+ gpioIn.innerHTML=s.gpio.inputs.map(g=>'<div class="pill"><b>'+g.name+'</b><br>GPIO '+g.pin+'<br>'+g.raw+' / '+(g.active?'active':'inactive')+'</div>').join('');
+ gpioLed.innerHTML=s.leds.items.map(l=>'<div class="pill" style="color:'+l.hex+'"><span class="lamp '+(l.on?'on':'')+'" style="background:'+l.hex+'"></span><b>'+l.name+'</b><br>GPIO '+l.pin+'<br>'+(l.on?'ON':'OFF')+'</div>').join('');
+ log.innerHTML=s.logs.map(x=>'<div>'+x+'</div>').join(''); log.scrollTop=log.scrollHeight;}
+setInterval(refresh,1000); refresh();
+</script></body></html>
+)HTML"; }
+
+void sendState(){
+  updatePowerFromPot(); tickEnergy(); updateState(); updateStatusLeds(); updateNeoPixel();
+  JsonDocument doc;
+  doc["deviceId"] = deviceId;
+  doc["state"] = state;
+  doc["lastEvent"] = lastEvent;
+  JsonObject flags = doc["flags"].to<JsonObject>();
+  flags["plugged"] = plugged; flags["authorized"] = authorized; flags["charging"] = charging; flags["faulted"] = faulted;
+  JsonObject sess = doc["session"].to<JsonObject>();
+  sess["id"] = sessionId; sess["kwh"] = sessionKwh; sess["cost"] = sessionKwh * PRICE_PER_KWH; sess["powerKw"] = powerKw;
+  JsonObject bill = doc["billing"].to<JsonObject>();
+  bill["sessionId"] = lastSessionId.length()?lastSessionId:sessionId;
+  bill["start"] = lastSessionStart; bill["stop"] = lastSessionStop;
+  bill["kwh"] = charging ? sessionKwh : lastSessionKwh;
+  bill["pricePerKwh"] = PRICE_PER_KWH;
+  bill["cost"] = charging ? sessionKwh*PRICE_PER_KWH : lastSessionCost;
+  JsonObject cfg = doc["config"].to<JsonObject>(); cfg["backendUrl"] = backendUrl; cfg["backendEnabled"] = backendEnabled;
+
+  JsonObject pp = doc["powerPot"].to<JsonObject>(); pp["pin"]=PIN_POT_POWER; pp["raw"]=potRaw; pp["voltage"]=potVoltage; pp["kw"]=powerKw; pp["maxKw"]=22.0;
+  JsonObject gpio = doc["gpio"].to<JsonObject>();
+  JsonArray inputs = gpio["inputs"].to<JsonArray>();
+  auto addInput=[&](const char* name,int pin){ JsonObject o=inputs.add<JsonObject>(); int v=digitalRead(pin); o["name"]=name; o["pin"]=pin; o["raw"]=(v==LOW?"LOW":"HIGH"); o["active"]=(v==LOW); };
+  addInput("Ladefreigabe", PIN_IN_RELEASE); addInput("Plug", PIN_IN_PLUG); addInput("Authorize", PIN_IN_AUTHORIZE); addInput("Start", PIN_IN_START); addInput("Stop", PIN_IN_STOP); addInput("Error", PIN_IN_ERROR);
+  JsonObject leds = doc["leds"].to<JsonObject>();
+  JsonArray items = leds["items"].to<JsonArray>();
+  auto addLed=[&](const char* name,int pin,const char* color,const char* hex,bool on){ JsonObject o=items.add<JsonObject>(); o["name"]=name; o["pin"]=pin; o["color"]=color; o["hex"]=hex; o["on"]=on; };
+  addLed("Available", PIN_LED_AVAILABLE, "Blau", "#35a7ff", ledAvailable);
+  addLed("Plugged", PIN_LED_PLUGGED, "Gelb", "#ffd166", ledPlugged);
+  addLed("Authorized", PIN_LED_AUTHORIZED, "Cyan", "#33e1ff", ledAuthorized);
+  addLed("Charging", PIN_LED_CHARGING, "Grün", "#2ee59d", ledCharging);
+  addLed("Faulted", PIN_LED_FAULTED, "Rot", "#ff5c7a", ledFaulted);
+  JsonArray arr = doc["logs"].to<JsonArray>();
+  for(int i=0;i<logCount;i++){ int idx=(logPos-logCount+i+80)%80; arr.add(logs[idx]); }
+  String out; serializeJson(doc,out); server.send(200,"application/json",out);
+}
+
+void sendBilling(){
+  tickEnergy();
+  JsonDocument doc;
+  doc["seller"] = "chargecloud mini charging lab";
+  doc["deviceId"] = deviceId;
+  doc["sessionId"] = lastSessionId.length()?lastSessionId:sessionId;
+  doc["start"] = lastSessionStart;
+  doc["stop"] = lastSessionStop.length()?lastSessionStop:isoTimestamp();
+  float kwh = charging ? sessionKwh : lastSessionKwh;
+  doc["kwh"] = kwh;
+  doc["pricePerKwhEur"] = PRICE_PER_KWH;
+  doc["totalEur"] = kwh * PRICE_PER_KWH;
+  doc["note"] = "Fiktive Abrechnung aus lokaler ESP32 Simulation";
+  String out; serializeJsonPretty(doc,out); server.send(200,"application/json",out);
+}
+
+void sendInvoice(){
+  tickEnergy();
+  float kwh = charging ? sessionKwh : lastSessionKwh;
+  float total = kwh * PRICE_PER_KWH;
+  String sid = lastSessionId.length()?lastSessionId:sessionId;
+  String h = "<!doctype html><html><head><meta charset='utf-8'><title>Abrechnung</title><style>body{font-family:Arial;margin:40px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:10px;text-align:left}.total{font-size:24px;font-weight:bold}</style></head><body>";
+  h += "<h1>Fiktive Ladeabrechnung</h1><p>chargecloud mini charging lab</p><table>";
+  h += "<tr><th>Session</th><td>"+sid+"</td></tr>";
+  h += "<tr><th>Device</th><td>"+deviceId+"</td></tr>";
+  h += "<tr><th>Start</th><td>"+lastSessionStart+"</td></tr>";
+  h += "<tr><th>Stop</th><td>"+(lastSessionStop.length()?lastSessionStop:isoTimestamp())+"</td></tr>";
+  h += "<tr><th>Verbrauch</th><td>"+String(kwh,3)+" kWh</td></tr>";
+  h += "<tr><th>Preis</th><td>0,50 EUR/kWh</td></tr>";
+  h += "<tr><th>Gesamt</th><td class='total'>"+String(total,2)+" EUR</td></tr></table><p>Dies ist eine fiktive lokale Simulation.</p><button onclick='print()'>Drucken</button></body></html>";
+  server.send(200,"text/html",h);
+}
+
+void handleAction(){
+  String a = server.arg("name");
+  if(a=="plug") doPlug(); else if(a=="unplug") doUnplug(); else if(a=="authorize") doAuthorize(); else if(a=="start") doStart(); else if(a=="stop") doStop(); else if(a=="reset") doReset();
+  server.send(200,"text/plain","OK");
+}
+
+void setup(){
+  Serial.begin(115200);
+  deviceId = makeDeviceId(); apSsid = "Wallbox-LOCAL-" + deviceId;
+  prefs.begin("localwb",false); backendUrl = prefs.getString("backend","");
+  WiFi.mode(WIFI_AP_STA); WiFi.softAP(apSsid.c_str(), AP_PASS); WiFi.begin(WIFI_SSID,WIFI_PASS);
+  configTime(0,0,"pool.ntp.org","time.google.com");
+  setupGpio(); updatePowerFromPot(); updateState(); updateStatusLeds(); updateNeoPixel(); addLog("Simulator ready. AP="+apSsid+" IP="+WiFi.softAPIP().toString());
+  server.on("/", [](){ server.send(200,"text/html",html()); });
+  server.on("/api/state", HTTP_GET, sendState);
+  server.on("/api/billing", HTTP_GET, sendBilling);
+  server.on("/invoice", HTTP_GET, sendInvoice);
+  server.on("/api/action", HTTP_POST, handleAction);
+  server.on("/api/config", HTTP_POST, [](){ JsonDocument d; deserializeJson(d,server.arg("plain")); backendUrl = d["backendUrl"] | backendUrl; prefs.putString("backend",backendUrl); addLog("Backend URL saved optional: "+backendUrl); server.send(200,"text/plain","OK"); });
+  server.begin();
+}
+
+void loop(){
+  server.handleClient();
+  readGpioInputs();
+  updatePowerFromPot();
+  tickEnergy();
+  updateState();
+  updateStatusLeds();
+  updateNeoPixel();
+}
