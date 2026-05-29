@@ -10,8 +10,9 @@
 
 const char* WIFI_SSID = "internet";
 const char* WIFI_PASS = "internet";
-const char* AP_SSID = "Wallbox-Simulator";
 const char* AP_PASS = "12345678";
+String deviceId = "";
+String apSsid = "";
 
 const int PIN_PLUG_SWITCH   = 4;
 const int PIN_AUTH_BUTTON   = 5;
@@ -73,6 +74,12 @@ String idTag = "CAFFEE";
 
 bool wsConnected = false;
 bool ocppAccepted = false;
+bool ntpSynced = false;
+String wifiStatus = "unknown";
+String dnsStatus = "not_checked";
+String ntpStatus = "not_checked";
+String wsStatus = "disconnected";
+String ocppStatus = "not_started";
 bool plugged = false;
 bool authorized = false;
 bool faulted = false;
@@ -103,6 +110,8 @@ void addLog(const String& line){ ocppLog[ocppLogPos]=isoTimestamp()+" "+line; oc
 void rgb(uint8_t r,uint8_t g,uint8_t b){ internalRgb.setPixelColor(0, internalRgb.Color(r,g,b)); internalRgb.show(); }
 void updateRgb(){ if(faulted) rgb(80,0,0); else if(wsConnected&&ocppAccepted) rgb(0,80,0); else if(wsConnected) rgb(0,0,80); else rgb(0,0,0); }
 
+String makeDeviceId(){ uint64_t mac=ESP.getEfuseMac(); char b[7]; snprintf(b,sizeof(b),"%02X%02X%02X", (uint8_t)(mac>>16), (uint8_t)(mac>>8), (uint8_t)mac); return String(b); }
+
 String makeUid(){ time_t now=time(nullptr); if(now<100000) now=millis()/1000; return String((unsigned long)now)+"-"+String(random(100000000,999999999))+"-"+String(msgCounter++); }
 
 void initPins(){
@@ -114,7 +123,7 @@ void initPins(){
 void deriveState(){ if(faulted) state="Faulted"; else if(transactionActive) state="Charging"; else if(plugged) state="Preparing"; else state="Available"; }
 void updateOutputs(){ digitalWrite(PIN_LED_AVAILABLE,state=="Available"); digitalWrite(PIN_LED_PREPARING,state=="Preparing"); digitalWrite(PIN_LED_CHARGING,state=="Charging"); digitalWrite(PIN_LED_FAULTED,state=="Faulted"); digitalWrite(PIN_CHARGE_ENABLE,state=="Charging"); digitalWrite(PIN_DEBUG_LED,WiFi.status()==WL_CONNECTED); digitalWrite(PIN_RELAY_SIM,transactionActive); digitalWrite(PIN_BUZZER,faulted); }
 
-void loadConfig(){ prefs.begin("wallbox",false); chargeboxId=prefs.getString("cbid","SIM_ESP32S3_001"); backendUrl=prefs.getString("url",backendUrl); wssPassword=prefs.getString("wssPw","12345678"); basicAuthEnabled=prefs.getBool("auth",false); appendChargeboxId=prefs.getBool("append",true); }
+void loadConfig(){ prefs.begin("wallbox",false); deviceId=makeDeviceId(); apSsid="Wallbox-SIM-"+deviceId; chargeboxId=prefs.getString("cbid","SIM_ESP32S3_"+deviceId); backendUrl=prefs.getString("url",backendUrl); wssPassword=prefs.getString("wssPw","12345678"); basicAuthEnabled=prefs.getBool("auth",false); appendChargeboxId=prefs.getBool("append",true); }
 void saveConfig(JsonDocument& d){ chargeboxId=d["chargeboxId"]|chargeboxId; backendUrl=d["backendUrl"]|backendUrl; wssPassword=d["wssPassword"]|wssPassword; basicAuthEnabled=d["basicAuthEnabled"]|basicAuthEnabled; appendChargeboxId=d["appendChargeboxId"]|appendChargeboxId; prefs.putString("cbid",chargeboxId); prefs.putString("url",backendUrl); prefs.putString("wssPw",wssPassword); prefs.putBool("auth",basicAuthEnabled); prefs.putBool("append",appendChargeboxId); }
 String fullOcppUrl(){ String u=backendUrl; if(appendChargeboxId && !u.endsWith("/"+chargeboxId)){ if(!u.endsWith("/")) u+="/"; u+=chargeboxId; } return u; }
 bool parseUrl(const String& url,String& host,uint16_t& port,String& path,bool& secure){ secure=url.startsWith("wss://"); bool plain=url.startsWith("ws://"); if(!secure&&!plain)return false; int start=secure?6:5; int slash=url.indexOf('/',start); String hp=slash>=0?url.substring(start,slash):url.substring(start); path=slash>=0?url.substring(slash):"/"; int colon=hp.indexOf(':'); if(colon>=0){host=hp.substring(0,colon); port=hp.substring(colon+1).toInt();} else {host=hp; port=secure?443:80;} return host.length()>0; }
@@ -130,36 +139,67 @@ void sendStopTransaction(){ JsonDocument p; p["meterStop"]=(int)sessionWh; p["ti
 void sendMeterValues(){ if(transactionId<0) return; JsonDocument p; p["connectorId"]=1; p["transactionId"]=transactionId; JsonArray mv=p["meterValue"].to<JsonArray>(); JsonObject item=mv.add<JsonObject>(); item["timestamp"]=isoTimestamp(); JsonArray sv=item["sampledValue"].to<JsonArray>(); JsonObject e=sv.add<JsonObject>(); e["value"]=String(sessionWh/1000.0,3); e["measurand"]="Energy.Active.Import.Register"; e["unit"]="kWh"; JsonObject pow=sv.add<JsonObject>(); pow["value"]=String(powerKw,1); pow["measurand"]="Power.Active.Import"; pow["unit"]="kW"; sendOcpp("MeterValues",p); }
 
 void handleCallResult(const String& uid, JsonVariant payload){
-  if(uid==lastBootUid){ String status=payload["status"]|""; heartbeatIntervalSec=payload["interval"]|300; ocppAccepted=(status=="Accepted"); if(ocppAccepted){ setPhase("bootAccepted"); lastEvent="Boot accepted"; lastReportedStatus=""; sendStatusNotification(state); lastReportedStatus=state; lastHeartbeatMs=millis(); } }
+  if(uid==lastBootUid){ String status=payload["status"]|""; heartbeatIntervalSec=payload["interval"]|300; ocppAccepted=(status=="Accepted"); ocppStatus=ocppAccepted?"accepted":"rejected"; if(ocppAccepted){ setPhase("bootAccepted"); lastEvent="Boot accepted"; lastReportedStatus=""; sendStatusNotification(state); lastReportedStatus=state; lastHeartbeatMs=millis(); } }
   else if(uid==lastStartUid){ transactionId=payload["transactionId"]|1; transactionActive=true; lastEvent="Transaction ID "+String(transactionId); }
   else if(uid==lastAuthorizeUid){ authorized=true; lastEvent="Authorized accepted"; }
   else if(uid==lastStopUid){ transactionActive=false; transactionId=-1; lastEvent="Stopped"; }
 }
 
 void wsEvent(WStype_t type,uint8_t* payload,size_t length){
-  if(type==WStype_CONNECTED){ wsConnected=true; ocppAccepted=false; lastReportedStatus=""; setPhase("wsConnected"); addLog("WS connected"); sendBootNotification(); setPhase("bootSent"); }
-  else if(type==WStype_DISCONNECTED){ wsConnected=false; ocppAccepted=false; if(connectPhase!="bootAccepted") setPhase("disconnected","Backend closed connection or TLS/Auth/Subprotocol failed"); addLog("WS disconnected"); }
+  if(type==WStype_CONNECTED){ wsStatus="connected"; wsConnected=true; ocppAccepted=false; lastReportedStatus=""; setPhase("wsConnected"); addLog("WS connected"); sendBootNotification(); ocppStatus="boot_sent"; setPhase("bootSent"); }
+  else if(type==WStype_DISCONNECTED){ wsStatus="disconnected"; wsConnected=false; ocppAccepted=false; if(connectPhase!="bootAccepted") setPhase("disconnected","Backend closed connection or TLS/Auth/Subprotocol failed"); addLog("WS disconnected"); }
   else if(type==WStype_TEXT){ String msg=String((char*)payload).substring(0,length); addLog("RX "+msg); JsonDocument d; if(deserializeJson(d,msg)==DeserializationError::Ok){ int mt=d[0]|0; if(mt==3){ String uid=d[1]|""; handleCallResult(uid,d[2]); } } }
 }
 
-void connectOcpp(){ String url=fullOcppUrl(); String host,path; uint16_t port; bool secure; if(!parseUrl(url,host,port,path,secure)){ setPhase("urlError","Invalid BackendURL. Use ws:// or wss://"); addLog("Invalid BackendURL"); return; } ws.disconnect(); ws.onEvent(wsEvent); ws.setReconnectInterval(5000); String headers=""; if(basicAuthEnabled && wssPassword.length()>0){ headers="Authorization: Basic "+base64::encode(chargeboxId+":"+wssPassword)+"\r\n"; } ws.setExtraHeaders(headers.c_str()); if(secure) ws.beginSSL(host.c_str(),port,path.c_str(),ROOT_CA,"ocpp1.6"); else ws.begin(host.c_str(),port,path.c_str(),"ocpp1.6"); setPhase("connecting"); addLog("Connecting "+url+" auth="+String(basicAuthEnabled?"on":"off")+" subprotocol=ocpp1.6"); }
+void connectOcpp(){ String url=fullOcppUrl(); if(url.startsWith("wss://") && !ntpSynced){ setPhase("ntpError","NTP not synced. WSS/TLS may fail."); addLog("NTP not synced - refusing WSS connect"); return; } if(WiFi.status()!=WL_CONNECTED){ setPhase("wifiError","WiFi not connected"); addLog("WiFi not connected - refusing OCPP connect"); return; } checkDnsForUrl(url); if(dnsStatus!="ok"){ setPhase("dnsError","Backend hostname cannot be resolved"); return; } wsStatus="connecting"; ocppStatus="connecting"; String host,path; uint16_t port; bool secure; if(!parseUrl(url,host,port,path,secure)){ setPhase("urlError","Invalid BackendURL. Use ws:// or wss://"); addLog("Invalid BackendURL"); return; } ws.disconnect(); ws.onEvent(wsEvent); ws.setReconnectInterval(5000); String headers=""; if(basicAuthEnabled && wssPassword.length()>0){ headers="Authorization: Basic "+base64::encode(chargeboxId+":"+wssPassword)+"\r\n"; } ws.setExtraHeaders(headers.c_str()); if(secure) ws.beginSSL(host.c_str(),port,path.c_str(),ROOT_CA,"ocpp1.6"); else ws.begin(host.c_str(),port,path.c_str(),"ocpp1.6"); setPhase("connecting"); addLog("Connecting "+url+" auth="+String(basicAuthEnabled?"on":"off")+" subprotocol=ocpp1.6"); }
 
-String htmlPage(){ return R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wallbox Simulator</title><style>body{font-family:Arial,sans-serif;background:#eef3f7;color:#102033;margin:0;padding:20px}.wrap{max-width:1050px;margin:auto}.card{background:white;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 10px 30px #0001}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.metric{background:#f6f9fc;border-radius:12px;padding:12px}.label{font-size:12px;color:#607084}.value{font-size:18px;font-weight:800;overflow-wrap:anywhere}input{width:100%;padding:10px;border:1px solid #ccd7e2;border-radius:10px;margin:4px 0 10px}button{border:0;border-radius:12px;padding:12px 14px;font-weight:800;background:#102033;color:white;margin:6px 6px 0 0}.row{display:flex;gap:16px;flex-wrap:wrap}.check{display:flex;align-items:center;gap:8px}.leds{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.led{display:flex;align-items:center;gap:10px;background:#f6f9fc;border-radius:12px;padding:12px;font-weight:800}.dot{width:18px;height:18px;border-radius:50%;background:#cbd5e1;box-shadow:inset 0 0 0 2px #94a3b8}.dot.on{background:#10b981;box-shadow:0 0 16px #10b981aa}.dot.warn{background:#f59e0b;box-shadow:0 0 16px #f59e0baa}.dot.bad{background:#ef4444;box-shadow:0 0 16px #ef4444aa}pre{background:#0b1622;color:#d8eaff;border-radius:14px;padding:14px;overflow:auto;max-height:280px}</style></head><body><div class="wrap"><h1>ESP32-S3 OCPP Wallbox Simulator</h1><div class="card"><h2>WSS Connection LEDs</h2><div class="leds" id="leds"></div><p id="hint"></p></div><div class="card"><h2>Status</h2><div class="grid" id="status"></div></div><div class="card"><h2>OCPP Configuration</h2><label>ChargeboxID</label><input id="cbid"><label>BackendURL</label><input id="url"><label>WSS Password</label><input id="pw" type="password"><div class="row"><label class="check"><input id="auth" type="checkbox" style="width:auto"> Basic Auth enabled</label><label class="check"><input id="append" type="checkbox" style="width:auto"> Append ChargeboxID to URL</label></div><button onclick="saveCfg()">Save configuration</button><button onclick="connectOcpp()">Connect OCPP</button><p id="msg"></p></div><div class="card"><h2>Live Log</h2><pre id="log">...</pre></div></div><script>let editing=false;document.addEventListener('focusin',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))editing=true});document.addEventListener('focusout',e=>{editing=false});function yn(v){return v?'Yes':'No'}async function load(){let s=await(await fetch('/api/state')).json();let led=(name,on,cls='on')=>'<div class="led"><span class="dot '+(on?cls:'')+'"></span>'+name+'</div>';leds.innerHTML=led('WLAN',s.net.wifi)+led('URL gültig',s.diagnosis.urlOk)+led('WSS/TLS verbunden',s.ocpp.wsConnected)+led('BootNotification gesendet',['bootSent','bootAccepted'].includes(s.diagnosis.phase),'warn')+led('Backend accepted',s.ocpp.accepted)+led('Fehler',s.diagnosis.phase==='disconnected'||s.diagnosis.phase==='urlError','bad');hint.textContent=s.diagnosis.error==='none'?'OK / kein Fehler gemeldet':s.diagnosis.error;let items=[['STA IP',s.net.staIp],['AP IP',s.net.apIp],['Full URL',s.config.fullUrl],['Auth',yn(s.config.basicAuthEnabled)],['State',s.state],['OCPP WS',yn(s.ocpp.wsConnected)],['Boot accepted',yn(s.ocpp.accepted)],['Heartbeat',s.ocpp.heartbeatIntervalSec+'s'],['Last status',s.ocpp.lastStatus],['Transaction',s.transactionId],['Power',s.powerKw.toFixed(1)+' kW']];status.innerHTML=items.map(i=>'<div class="metric"><div class="label">'+i[0]+'</div><div class="value">'+i[1]+'</div></div>').join('');log.textContent=(s.log||[]).join('\n');if(!editing){cbid.value=s.config.chargeboxId;url.value=s.config.backendUrl;pw.value=s.config.wssPassword;auth.checked=s.config.basicAuthEnabled;append.checked=s.config.appendChargeboxId}}async function saveCfg(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chargeboxId:cbid.value,backendUrl:url.value,wssPassword:pw.value,basicAuthEnabled:auth.checked,appendChargeboxId:append.checked})});msg.textContent='Saved.';load()}async function connectOcpp(){await fetch('/api/connect',{method:'POST'});msg.textContent='Connecting...';load()}setInterval(load,1500);load();</script></body></html>)HTML"; }
+String htmlPage(){ return R"HTML(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wallbox Simulator</title><style>body{font-family:Arial,sans-serif;background:#eef3f7;color:#102033;margin:0;padding:20px}.wrap{max-width:1050px;margin:auto}.card{background:white;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 10px 30px #0001}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.metric{background:#f6f9fc;border-radius:12px;padding:12px}.label{font-size:12px;color:#607084}.value{font-size:18px;font-weight:800;overflow-wrap:anywhere}input{width:100%;padding:10px;border:1px solid #ccd7e2;border-radius:10px;margin:4px 0 10px}button{border:0;border-radius:12px;padding:12px 14px;font-weight:800;background:#102033;color:white;margin:6px 6px 0 0}.row{display:flex;gap:16px;flex-wrap:wrap}.check{display:flex;align-items:center;gap:8px}.leds{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.led{display:flex;align-items:center;gap:10px;background:#f6f9fc;border-radius:12px;padding:12px;font-weight:800}.dot{width:18px;height:18px;border-radius:50%;background:#cbd5e1;box-shadow:inset 0 0 0 2px #94a3b8}.dot.on{background:#10b981;box-shadow:0 0 16px #10b981aa}.dot.warn{background:#f59e0b;box-shadow:0 0 16px #f59e0baa}.dot.bad{background:#ef4444;box-shadow:0 0 16px #ef4444aa}pre{background:#0b1622;color:#d8eaff;border-radius:14px;padding:14px;overflow:auto;max-height:280px}</style></head><body><div class="wrap"><h1>ESP32-S3 OCPP Wallbox Simulator</h1><div class="card"><h2>WSS Connection LEDs</h2><div class="leds" id="leds"></div><p id="hint"></p></div><div class="card"><h2>Status</h2><div class="grid" id="status"></div></div><div class="card"><h2>OCPP Configuration</h2><label>ChargeboxID</label><input id="cbid"><label>BackendURL</label><input id="url"><label>WSS Password</label><input id="pw" type="password"><div class="row"><label class="check"><input id="auth" type="checkbox" style="width:auto"> Basic Auth enabled</label><label class="check"><input id="append" type="checkbox" style="width:auto"> Append ChargeboxID to URL</label></div><button onclick="saveCfg()">Save configuration</button><button onclick="connectOcpp()">Connect OCPP</button><p id="msg"></p></div><div class="card"><h2>Live Log</h2><pre id="log">...</pre></div></div><script>let editing=false;document.addEventListener('focusin',e=>{if(['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))editing=true});document.addEventListener('focusout',e=>{editing=false});function yn(v){return v?'Yes':'No'}async function load(){let s=await(await fetch('/api/state')).json();let led=(name,on,cls='on')=>'<div class="led"><span class="dot '+(on?cls:'')+'"></span>'+name+'</div>';leds.innerHTML=led('WLAN',s.net.wifi)+led('URL gültig',s.diagnosis.urlOk)+led('WSS/TLS verbunden',s.ocpp.wsConnected)+led('BootNotification gesendet',['bootSent','bootAccepted'].includes(s.diagnosis.phase),'warn')+led('Backend accepted',s.ocpp.accepted)+led('Fehler',s.diagnosis.phase==='disconnected'||s.diagnosis.phase==='urlError','bad');hint.textContent=s.diagnosis.error==='none'?'OK / kein Fehler gemeldet':s.diagnosis.error;let items=[['Device ID',s.device.deviceId],['AP SSID',s.device.apSsid],['STA IP',s.net.staIp],['AP IP',s.net.apIp],['Full URL',s.config.fullUrl],['Auth',yn(s.config.basicAuthEnabled)],['State',s.state],['OCPP WS',yn(s.ocpp.wsConnected)],['Boot accepted',yn(s.ocpp.accepted)],['Heartbeat',s.ocpp.heartbeatIntervalSec+'s'],['Last status',s.ocpp.lastStatus],['Transaction',s.transactionId],['Power',s.powerKw.toFixed(1)+' kW']];status.innerHTML=items.map(i=>'<div class="metric"><div class="label">'+i[0]+'</div><div class="value">'+i[1]+'</div></div>').join('');log.textContent=(s.log||[]).join('\n');if(!editing){cbid.value=s.config.chargeboxId;url.value=s.config.backendUrl;pw.value=s.config.wssPassword;auth.checked=s.config.basicAuthEnabled;append.checked=s.config.appendChargeboxId}}async function saveCfg(){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chargeboxId:cbid.value,backendUrl:url.value,wssPassword:pw.value,basicAuthEnabled:auth.checked,appendChargeboxId:append.checked})});msg.textContent='Saved.';load()}async function connectOcpp(){await fetch('/api/connect',{method:'POST'});msg.textContent='Connecting...';load()}setInterval(load,1500);load();</script></body></html>)HTML"; }
 
-void handleState(){ JsonDocument doc; JsonObject net=doc["net"].to<JsonObject>(); net["wifi"]=WiFi.status()==WL_CONNECTED; net["staIp"]=WiFi.localIP().toString(); net["apIp"]=WiFi.softAPIP().toString(); doc["state"]=state; doc["plugged"]=plugged; doc["authorized"]=authorized; doc["transactionActive"]=transactionActive; doc["transactionId"]=transactionId; doc["faulted"]=faulted; doc["powerKw"]=powerKw; JsonObject diag=doc["diagnosis"].to<JsonObject>(); diag["phase"]=connectPhase; diag["error"]=connectError; diag["urlOk"]=fullOcppUrl().startsWith("ws://")||fullOcppUrl().startsWith("wss://"); JsonObject ocpp=doc["ocpp"].to<JsonObject>(); ocpp["wsConnected"]=wsConnected; ocpp["accepted"]=ocppAccepted; ocpp["heartbeatIntervalSec"]=heartbeatIntervalSec; ocpp["lastStatus"]=lastReportedStatus; JsonObject cfg=doc["config"].to<JsonObject>(); cfg["chargeboxId"]=chargeboxId; cfg["backendUrl"]=backendUrl; cfg["fullUrl"]=fullOcppUrl(); cfg["wssPassword"]=wssPassword; cfg["basicAuthEnabled"]=basicAuthEnabled; cfg["appendChargeboxId"]=appendChargeboxId; JsonArray logs=doc["log"].to<JsonArray>(); for(int i=0;i<ocppLogCount;i++){ int idx=(ocppLogPos-ocppLogCount+i+40)%40; logs.add(ocppLog[idx]); } String out; serializeJson(doc,out); server.send(200,"application/json",out); }
+void handleState(){ JsonDocument doc; JsonObject dev=doc["device"].to<JsonObject>(); dev["deviceId"]=deviceId; dev["apSsid"]=apSsid; JsonObject net=doc["net"].to<JsonObject>(); net["wifi"]=WiFi.status()==WL_CONNECTED; net["wifiStatus"]=wifiStatus; net["dnsStatus"]=dnsStatus; net["ntpStatus"]=ntpStatus; net["ntpSynced"]=ntpSynced; net["wsStatus"]=wsStatus; net["ocppStatus"]=ocppStatus; net["staIp"]=WiFi.localIP().toString(); net["apIp"]=WiFi.softAPIP().toString(); doc["state"]=state; doc["plugged"]=plugged; doc["authorized"]=authorized; doc["transactionActive"]=transactionActive; doc["transactionId"]=transactionId; doc["faulted"]=faulted; doc["powerKw"]=powerKw; JsonObject diag=doc["diagnosis"].to<JsonObject>(); diag["phase"]=connectPhase; diag["error"]=connectError; diag["urlOk"]=fullOcppUrl().startsWith("ws://")||fullOcppUrl().startsWith("wss://"); JsonObject ocpp=doc["ocpp"].to<JsonObject>(); ocpp["wsConnected"]=wsConnected; ocpp["accepted"]=ocppAccepted; ocpp["heartbeatIntervalSec"]=heartbeatIntervalSec; ocpp["lastStatus"]=lastReportedStatus; JsonObject cfg=doc["config"].to<JsonObject>(); cfg["chargeboxId"]=chargeboxId; cfg["backendUrl"]=backendUrl; cfg["fullUrl"]=fullOcppUrl(); cfg["wssPassword"]=wssPassword; cfg["basicAuthEnabled"]=basicAuthEnabled; cfg["appendChargeboxId"]=appendChargeboxId; JsonArray logs=doc["log"].to<JsonArray>(); for(int i=0;i<ocppLogCount;i++){ int idx=(ocppLogPos-ocppLogCount+i+40)%40; logs.add(ocppLog[idx]); } String out; serializeJson(doc,out); server.send(200,"application/json",out); }
 void setupWeb(){ server.on("/",[](){server.send(200,"text/html",htmlPage());}); server.on("/api/state",HTTP_GET,handleState); server.on("/api/config",HTTP_POST,[](){ JsonDocument d; deserializeJson(d,server.arg("plain")); saveConfig(d); server.send(200,"application/json","{\"ok\":true}"); }); server.on("/api/connect",HTTP_POST,[](){ connectOcpp(); server.send(200,"application/json","{\"ok\":true}"); }); server.begin(); }
-void setupNetwork(){ WiFi.mode(WIFI_AP_STA); WiFi.softAP(AP_SSID,AP_PASS); WiFi.begin(WIFI_SSID,WIFI_PASS); configTime(0,0,"pool.ntp.org"); Serial.println("AP http://"+WiFi.softAPIP().toString()); }
+bool waitForWifi(uint32_t timeoutMs=15000){
+  wifiStatus="connecting";
+  uint32_t start=millis();
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<timeoutMs){ delay(250); }
+  wifiStatus = WiFi.status()==WL_CONNECTED ? "connected" : "failed";
+  if(wifiStatus=="connected") addLog("WiFi connected: "+WiFi.localIP().toString());
+  else addLog("WiFi failed");
+  return WiFi.status()==WL_CONNECTED;
+}
 
-void readInputs(){
-  plugged=digitalRead(PIN_PLUG_SWITCH)==LOW; faulted=digitalRead(PIN_FAULT_SWITCH)==LOW; int raw=analogRead(PIN_POWER_POT); powerKw=map(raw,0,4095,0,220)/10.0;
-  bool auth=digitalRead(PIN_AUTH_BUTTON), start=digitalRead(PIN_START_BUTTON), stop=digitalRead(PIN_STOP_BUTTON), reset=digitalRead(PIN_RESET_BUTTON), connect=digitalRead(PIN_CONNECT_BTN);
-  if(lastPlug!=digitalRead(PIN_PLUG_SWITCH)){ lastPlug=digitalRead(PIN_PLUG_SWITCH); }
-  if(lastAuth==HIGH && auth==LOW){ authorized=true; sendAuthorize(); }
-  if(lastStart==HIGH && start==LOW && plugged && authorized && !faulted){ transactionActive=true; if(transactionId<0) transactionId=1; sendStartTransaction(); }
-  if(lastStop==HIGH && stop==LOW){ sendStopTransaction(); transactionActive=false; transactionId=-1; }
-  if(lastReset==HIGH && reset==LOW){ authorized=false; transactionActive=false; transactionId=-1; faulted=false; sessionWh=0; lastReportedStatus=""; }
-  if(lastConnect==HIGH && connect==LOW){ connectOcpp(); }
-  lastAuth=auth; lastStart=start; lastStop=stop; lastReset=reset; lastConnect=connect;
+bool checkNtp(uint32_t timeoutMs=12000){
+  if(WiFi.status()!=WL_CONNECTED){ ntpSynced=false; ntpStatus="wifi_not_connected"; addLog("NTP skipped: WiFi not connected"); return false; }
+  ntpStatus="syncing";
+  configTime(0,0,"pool.ntp.org","time.google.com","time.cloudflare.com");
+  time_t now=0; uint32_t start=millis();
+  while(millis()-start<timeoutMs){
+    time(&now);
+    if(now>1704067200){ ntpSynced=true; ntpStatus="synced"; addLog("NTP synced: "+isoTimestamp()); return true; }
+    delay(250);
+  }
+  ntpSynced=false; ntpStatus="failed"; addLog("NTP failed"); return false;
+}
+
+bool checkDnsForUrl(const String& url){
+  String host,path; uint16_t port; bool secure;
+  if(!parseUrl(url,host,port,path,secure)){ dnsStatus="url_error"; return false; }
+  IPAddress ip;
+  if(WiFi.hostByName(host.c_str(), ip)){ dnsStatus="ok"; addLog("DNS ok: "+host+" -> "+ip.toString()); return true; }
+  dnsStatus="failed"; addLog("DNS failed: "+host); return false;
+}
+
+void setupNetwork(){
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(apSsid.c_str(),AP_PASS);
+  WiFi.begin(WIFI_SSID,WIFI_PASS);
+  Serial.println("AP SSID: "+apSsid);
+  Serial.println("AP http://"+WiFi.softAPIP().toString());
+  if(waitForWifi()){
+    checkNtp();
+    checkDnsForUrl(fullOcppUrl());
+  } else {
+    ntpSynced=false; ntpStatus="wifi_not_connected"; dnsStatus="wifi_not_connected";
+  }
 }
 
 void setup(){ Serial.begin(115200); randomSeed(esp_random()); internalRgb.begin(); internalRgb.clear(); internalRgb.show(); initPins(); loadConfig(); setupNetwork(); setupWeb(); addLog("Ready. Webinterface on AP http://192.168.4.1"); }
