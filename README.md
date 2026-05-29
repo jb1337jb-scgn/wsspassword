@@ -1,46 +1,51 @@
-# ESP32-S3 OCPP Wallbox Simulator mit RGB-LED
+# ESP32-S3-N16R8 OCPP Wallbox Simulator - Basic AP+STA
 
-Diese Version enthaelt:
-- OCPP 1.6J ueber WSS
-- NTP-Zeit
-- GPIO-Eingaenge fuer physisches Bedienpanel
-- Ladefreigabe-Ausgang auf GPIO 21
-- eingebaute RGB-LED / NeoPixel auf GPIO 48
+Grundversion fuer den ESP32-S3-N16R8.
 
-## RGB-LED Statusfarben
+## WLAN
 
-| Status | Farbe |
-|---|---|
-| OCPP nicht verbunden | Violett |
-| Available | Gruen |
-| Preparing | Gelb |
-| Charging | Blau |
-| SuspendedEVSE | Orange |
-| Faulted | Rot |
+- Station WLAN: `internet` / `internet`
+- Parallel AP: `Wallbox-Simulator` / `12345678`
+- AP Webinterface: `http://192.168.4.1`
 
-Hinweis: Viele ESP32-S3-WROOM-1 Devboards nutzen GPIO 48 fuer die eingebaute WS2812 RGB-LED. Falls dein Board einen anderen Pin nutzt, `PIN_RGB_LED` im Code anpassen.
+## Webinterface
 
-## Ladefreigabe-Ausgang
+Aenderbar und dauerhaft gespeichert:
 
-| Funktion | GPIO | Logik |
-|---|---:|---|
-| Charge Enable | 21 | HIGH nur bei Status Charging |
+- ChargeboxID
+- BackendURL
+- WSS Passwort
 
-## GPIO-Eingaenge active LOW
+Default WSS Passwort: `12345678`
+
+## GPIOs auf der 3V3-Seite
+
+Eingaenge sind `INPUT_PULLUP`, aktiv gegen GND.
 
 | Funktion | GPIO |
 |---|---:|
-| Plug | 4 |
-| Auth | 5 |
-| Start | 6 |
-| Stop | 7 |
-| Fault | 15 |
-| Reset | 18 |
-| OCPP verbinden | 8 |
-| Poti Ladeleistung | 1 |
+| Plug Switch | 4 |
+| Auth Button | 5 |
+| Start Button | 6 |
+| Stop Button | 7 |
+| Fault Switch | 15 |
+| Reset Button | 16 |
+| Connect Button | 17 |
+| Potentiometer | 3 |
+| LED Available | 18 |
+| LED Preparing | 8 |
+| LED Charging | 9 |
+| LED Faulted | 10 |
+| Charge Enable | 11 |
+| Debug LED | 12 |
+| Relay Sim | 13 |
+| Buzzer/Signal | 14 |
+| Reserved | 46 |
 
-## Flashen
-```bash
-pio run -t upload
-pio device monitor
-```
+## Interne RGB LED
+
+NeoPixel auf GPIO 48:
+
+- aus: keine Backendverbindung
+- blau: WebSocket verbunden
+- gruen: BootNotification accepted
